@@ -107,17 +107,25 @@ class Resize(object):
         return (new_width, new_height)
 
     def __call__(self, sample):
-        width, height = self.get_size(sample["image"].shape[1], sample["image"].shape[0])
-        
-        # resize sample
-        sample["image"] = cv2.resize(sample["image"], (width, height), interpolation=self.__image_interpolation_method)
 
-        if self.__resize_target:
-            if "depth" in sample:
-                sample["depth"] = cv2.resize(sample["depth"], (width, height), interpolation=cv2.INTER_NEAREST)
-                
-            if "mask" in sample:
-                sample["mask"] = cv2.resize(sample["mask"].astype(np.float32), (width, height), interpolation=cv2.INTER_NEAREST)
+        if "image" in sample:
+            width, height = self.get_size(sample["image"].shape[1], sample["image"].shape[0])
+            
+            # resize sample
+            sample["image"] = cv2.resize(sample["image"], (width, height), interpolation=self.__image_interpolation_method)
+
+            if self.__resize_target:
+                if "depth" in sample:
+                    sample["depth"] = cv2.resize(sample["depth"], (width, height), interpolation=cv2.INTER_NEAREST)
+                    
+                if "mask" in sample:
+                    sample["mask"] = cv2.resize(sample["mask"].astype(np.float32), (width, height), interpolation=cv2.INTER_NEAREST)
+        if "depth_prior" in sample:
+            width, height = self.get_size(sample["depth_prior"].shape[1], sample["depth_prior"].shape[0])
+            
+            # resize sample
+            sample["depth_prior"] = cv2.resize(sample["depth_prior"], (width, height), interpolation=self.__image_interpolation_method)
+
         
         return sample
 
@@ -144,15 +152,19 @@ class PrepareForNet(object):
         pass
 
     def __call__(self, sample):
-        image = np.transpose(sample["image"], (2, 0, 1))
-        sample["image"] = np.ascontiguousarray(image).astype(np.float32)
+        if "image" in sample:
+            image = np.transpose(sample["image"], (2, 0, 1))
+            sample["image"] = np.ascontiguousarray(image).astype(np.float32)
 
-        if "depth" in sample:
-            depth = sample["depth"].astype(np.float32)
-            sample["depth"] = np.ascontiguousarray(depth)
-        
-        if "mask" in sample:
-            sample["mask"] = sample["mask"].astype(np.float32)
-            sample["mask"] = np.ascontiguousarray(sample["mask"])
+            if "depth" in sample:
+                depth = sample["depth"].astype(np.float32)
+                sample["depth"] = np.ascontiguousarray(depth)
+            
+            if "mask" in sample:
+                sample["mask"] = sample["mask"].astype(np.float32)
+                sample["mask"] = np.ascontiguousarray(sample["mask"])
+        if "depth_prior" in sample:
+            depth_prior = np.transpose(sample["depth_prior"], (2, 0, 1))
+            sample["depth_prior"] = np.ascontiguousarray(depth_prior).astype(np.float32)
         
         return sample

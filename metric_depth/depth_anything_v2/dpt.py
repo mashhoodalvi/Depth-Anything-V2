@@ -220,3 +220,5 @@ class DepthAnythingV2(nn.Module):
         image = image.to(DEVICE)
         
         return image, (h, w)
+
+

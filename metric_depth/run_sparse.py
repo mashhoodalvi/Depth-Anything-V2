@@ -6,13 +6,14 @@ import numpy as np
 import os
 import torch
 
-from depth_anything_v2.dpt import DepthAnythingV2
+from depth_anything_v2.dpt_sparse import SparsePriorDA
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Depth Anything V2 Metric Depth Estimation')
     
-    parser.add_argument('--img-path', type=str, default="assets/examples/demo0.jpg")
+    parser.add_argument('--img-path', type=str, default="assets/examples/demo04.jpg")
+    parser.add_argument('--depth-path', type=str, default="assets/examples/demo04.jpg")
     parser.add_argument('--input-size', type=int, default=518)
     parser.add_argument('--outdir', type=str, default='./vis_depth')
     
@@ -34,8 +35,8 @@ if __name__ == '__main__':
         'vitg': {'encoder': 'vitg', 'features': 384, 'out_channels': [1536, 1536, 1536, 1536]}
     }
     
-    depth_anything = DepthAnythingV2(**{**model_configs[args.encoder], 'max_depth': args.max_depth})
-    depth_anything.load_state_dict(torch.load(args.load_from, map_location='cpu'))
+    depth_anything = SparsePriorDA(**{**model_configs[args.encoder], 'max_depth': args.max_depth})
+    depth_anything.load_state_dict(torch.load(args.load_from, map_location='cpu'), strict=False)
     depth_anything = depth_anything.to(DEVICE).eval()
     
     if os.path.isfile(args.img_path):
@@ -55,8 +56,10 @@ if __name__ == '__main__':
         print(f'Progress {k+1}/{len(filenames)}: {filename}')
         
         raw_image = cv2.imread(filename)
-        
-        depth = depth_anything.infer_image(raw_image, args.input_size)
+        raw_image = cv2.imread("../Prior_depth_old/assets/sample-1/rgb.jpg")
+        raw_depth_prior = cv2.imread("../Prior_depth_old/assets/sample-1/gt_depth.png")
+        print(raw_depth_prior.shape)
+        depth = depth_anything.infer_image(raw_image, raw_depth_prior, args.input_size)
         print(np.max(depth))
         
         if args.save_numpy:
@@ -79,3 +82,9 @@ if __name__ == '__main__':
             combined_result = cv2.hconcat([raw_image, split_region, depth])
             
             cv2.imwrite(output_path, combined_result)
+        print(sum(p.numel() for p in depth_anything.pretrained.parameters()))
+        print(sum(p.numel() for p in depth_anything.depth_embedder.parameters()))
+        print(sum(p.numel() for p in depth_anything.depth_self_att.parameters()))
+        print(sum(p.numel() for p in depth_anything.depth_cross_att.parameters()))
+        print(sum(p.numel() for p in depth_anything.depth_head.parameters()))
+
