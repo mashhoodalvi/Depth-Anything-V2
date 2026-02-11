@@ -1,0 +1,25 @@
+$schema: https://azuremlschemas.azureedge.net/latest/commandJob.schema.json
+type: command
+
+display_name: mlflow-dummy-test
+experiment_name: train_sparse_da
+
+
+command: >-
+  python test_mlflow.py
+
+code: ..
+
+inputs:
+  data:
+    type: uri_folder
+    # use registered data asset by name:version (or set a direct azureml:// path)
+    path: azureml:nyu_v2_280res:1
+    mode: ro_mount
+
+outputs:
+  model_dir:
+    type: uri_folder
+
+environment: azureml:diffusion-finetune:10
+compute: mashhood-alvi-gpu

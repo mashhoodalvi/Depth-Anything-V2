@@ -1,0 +1,38 @@
+$schema: https://azuremlschemas.azureedge.net/latest/commandJob.schema.json
+type: command
+
+display_name: test_run
+experiment_name: train_sparse_da
+
+
+command: >
+  bash -c "python train_sparse.py
+  --pretrained-from=${{inputs.weights}}
+  --relative-path=${{inputs.data}}
+  --save-path=./outputs
+  --bs=4
+  --lr=0.000005
+  --epochs=10
+  --save-model=0"
+
+code: ..
+
+inputs:
+  data:
+    type: uri_folder
+    # use registered data asset by name:version (or set a direct azureml:// path)
+    path: azureml:Hypersim:1
+    mode: ro_mount
+
+  weights:
+    type: uri_folder
+    # use registered data asset by name:version (or set a direct azureml:// path)
+    path: azureml:depth_anything_weights:1
+    mode: ro_mount
+
+outputs:
+  model_dir:
+    type: uri_folder
+
+environment: azureml:diffusion-finetune:10
+compute: mashhood-alvi-gpu
