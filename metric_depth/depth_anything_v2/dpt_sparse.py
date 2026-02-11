@@ -344,42 +344,55 @@ class DepthEmbedding(nn.Module):
 
 
 class DepthSelfBlock(nn.Module):
-    def __init__(self, dim = 768, num_heads = 8, mlp_ratio=4.0):
+    def __init__(self, dim = 768, bottleneck = 128, num_heads = 4, mlp_ratio=4.0):
         super().__init__()
-        self.norm1 = nn.LayerNorm(dim)
-        self.attn = nn.MultiheadAttention(dim, num_heads, batch_first=True, bias=True)
+
+        self.proj_in = nn.Linear(dim, bottleneck)
+
+        self.norm1 = nn.LayerNorm(bottleneck)
+        self.attn = nn.MultiheadAttention(bottleneck, num_heads, batch_first=True, bias=True)
 
 
-        self.norm2 = nn.LayerNorm(dim)
+        self.norm2 = nn.LayerNorm(bottleneck)
         self.mlp = nn.Sequential(
-            nn.Linear(dim, int(dim * mlp_ratio)),
+            nn.Linear(bottleneck, int(bottleneck * mlp_ratio)),
             nn.GELU(),
-            nn.Linear(int(dim * mlp_ratio), dim),
+            nn.Dropout(0.1),
+            nn.Linear(int(bottleneck * mlp_ratio), bottleneck),
         )
+        self.proj_out = nn.Linear(bottleneck, dim)
+        nn.init.zeros_(self.proj_out.weight)  #notwendig?
+        nn.init.zeros_(self.proj_out.bias)
+
 
     def forward(self, x):
-        x = x + self.attn(self.norm1(x), self.norm1(x), self.norm1(x))[0]
-        x = x + self.mlp(self.norm2(x))
-        return x
+        z = self.proj_in(x)
+        z = z + self.attn(self.norm1(z), self.norm1(z), self.norm1(z))[0]
+        z = z + self.mlp(self.norm2(z))
+        return x + self.proj_out(z)
     
 
 class DepthCrossBlock(nn.Module):
-    def __init__(self, dim = 768, num_heads = 8):
+    def __init__(self, dim = 768, bottleneck = 128, num_heads = 4):
         super().__init__()
-        self.norm_q = nn.LayerNorm(dim)
-        self.norm_kv = nn.LayerNorm(dim)
 
-        self.attn = nn.MultiheadAttention(dim, num_heads, batch_first=True)
-        self.proj = nn.Linear(dim, dim)
+        self.q_proj = nn.Linear(dim, bottleneck)
+        self.kv_proj = nn.Linear(dim, bottleneck)
+
+        self.norm_q = nn.LayerNorm(bottleneck)
+        self.norm_kv = nn.LayerNorm(bottleneck)
+
+        self.attn = nn.MultiheadAttention(bottleneck, num_heads, batch_first=True)
+        self.proj = nn.Linear(bottleneck, dim)
 
         nn.init.zeros_(self.proj.weight) 
         nn.init.zeros_(self.proj.bias) # when attention zero and bias zero all is zero
 
     def forward(self, rgb, depth):
         out = self.attn(
-            self.norm_q(rgb),
-            self.norm_kv(depth),
-            self.norm_kv(depth),
+            self.norm_q(self.q_proj(rgb)),
+            self.norm_kv(self.kv_proj(depth)),
+            self.norm_kv(self.kv_proj(depth)),
         )[0]
         return rgb + self.proj(out)
 

@@ -50,6 +50,13 @@ class Hypersim(Dataset):
         ] + ([Crop(size[0])] if self.mode == 'train' else []))
         
     def __getitem__(self, item):
+
+        if self.mode == "val":
+            seed = item  
+            random.seed(seed)
+            np.random.seed(seed)
+            torch.manual_seed(seed)
+
         img_path = os.path.join(self.relative_path, self.filelist[item].split(' ')[0])
         depth_path = os.path.join(self.relative_path, self.filelist[item].split(' ')[1])
         label_path = os.path.join(self.relative_path, self.filelist[item].split(' ')[1].replace("depth_meters", "semantic"))
@@ -135,7 +142,7 @@ class Hypersim(Dataset):
         else:
             # ---- rectangle-based prior ----
             # number of rectangles (bias towards 1)
-            probs = torch.tensor([0.6, 0.3, 0.1], device=device)
+            probs = torch.tensor([0.8, 0.1, 0.1], device=device)
             prior_number = torch.multinomial(probs, 1).item() + 1  # 1..3
 
             # rectangle size distribution (biased around mean)
@@ -169,7 +176,7 @@ class Hypersim(Dataset):
                 dominant_label = labels[counts.argmax()]
 
                 label_mask = label_patch == dominant_label
-                final_mask = valid & label_mask
+                final_mask = valid if random.random() < 0.2 else (valid & label_mask)  #randomly use label
 
                 if final_mask.sum() == 0:
                     continue
