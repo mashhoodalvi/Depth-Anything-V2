@@ -173,6 +173,12 @@ class Resize(object):
             interpolation=self.__image_interpolation_method,
         )
 
+        sample["label"] = cv2.resize(
+            sample["label"],
+            (width, height),
+            interpolation=self.__image_interpolation_method,
+        )
+
         if not self.__resize_target:
             if "depth" in sample:
                 sample["depth_resized"] = cv2.resize(
@@ -240,6 +246,10 @@ class PrepareForNet(object):
         if "mask" in sample:
             sample["mask"] = sample["mask"].astype(np.float32)
             sample["mask"] = np.ascontiguousarray(sample["mask"])
+
+        if "label" in sample:
+            sample["label"] = sample["label"].astype(np.int8)
+            sample["label"] = np.ascontiguousarray(sample["label"])
         
         if "depth" in sample:
             depth = sample["depth"].astype(np.float32)
@@ -279,6 +289,9 @@ class Crop(object):
         
         if "depth" in sample:
             sample["depth"] = sample["depth"][h_start: h_end, w_start: w_end]
+
+        if "label" in sample:
+            sample["label"] = sample["label"][h_start: h_end, w_start: w_end]
 
         if "depth_resized" in sample:
             sample["depth_resized"] = sample["depth_resized"][h_start: h_end, w_start: w_end]

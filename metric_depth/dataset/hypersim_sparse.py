@@ -6,6 +6,7 @@ from torch.utils.data import Dataset
 from torchvision.transforms import Compose
 import os
 from dataset.transform import Resize, NormalizeImage, PrepareForNet, Crop
+import random
 
 
 def hypersim_distance_to_depth(npyDistance):
@@ -59,18 +60,21 @@ class Hypersim(Dataset):
         depth_fd = h5py.File(depth_path, "r")
         distance_meters = np.array(depth_fd['dataset'])  #alternative depth_fd['dataset'][:]
         depth = hypersim_distance_to_depth(distance_meters)
+
+        label_fd = h5py.File(label_path, "r")
+        label = np.array(label_fd['dataset']) 
         
-        sample = self.transform({'image': image, 'depth': depth})
+        sample = self.transform({'image': image, 'depth': depth, 'label': label})
 
         sample['image'] = torch.from_numpy(sample['image'])
         sample['depth'] = torch.from_numpy(sample['depth'])
         sample['valid_mask'] = (torch.isnan(sample['depth']) == 0)
         sample['depth'][sample['valid_mask'] == 0] = 0
         if self.mode == "train":
-            sample['prior'] = self.create_prior(sample['depth'])
+            sample['prior'] = self.create_prior(sample['depth'], torch.from_numpy(sample['label']))
         else:
             depth_resized = torch.from_numpy(sample['depth_resized'])
-            sample['prior'] = self.create_prior(depth_resized)
+            sample['prior'] = self.create_prior(depth_resized, torch.from_numpy(sample['label']))
 
         sample['image_path'] = self.filelist[item].split(' ')[0]
         
@@ -79,7 +83,8 @@ class Hypersim(Dataset):
     def create_prior(
         self,
         depth: torch.Tensor,
-        num_samples: int = 500,
+        label: torch.Tensor,
+        #num_samples: int = 500,
         noise_std: float = 0.01,
         outlier_prob: float = 0.1,
         shift_max: int = 4,
@@ -92,7 +97,6 @@ class Hypersim(Dataset):
 
         device = depth.device
         H, W = depth.shape
-
         prior = torch.zeros((H, W), device=device)
 
         # valid depth mask
@@ -101,31 +105,92 @@ class Hypersim(Dataset):
 
         if len(valid_indices) == 0:
             return prior
-
+        
+        if random.random() < 0.5:  #sparse prior
         # sample valid pixels
-        num_samples = min(num_samples, len(valid_indices))
-        perm = torch.randperm(len(valid_indices), device=device)[:num_samples]
-        sampled = valid_indices[perm]  # (N, 2)
+            num_samples = np.random.randint(5, 100)
+            num_samples = min(num_samples, len(valid_indices))
+            perm = torch.randperm(len(valid_indices), device=device)[:num_samples]
+            sampled = valid_indices[perm]  # (N, 2)
 
-        rows, cols = sampled[:, 0], sampled[:, 1]
-        sampled_values = depth[rows, cols]
+            rows, cols = sampled[:, 0], sampled[:, 1]
+            sampled_values = depth[rows, cols]
 
-        # add gaussian noise
-        sampled_values = sampled_values + torch.randn_like(sampled_values) * noise_std
+            # add gaussian noise
+            sampled_values = sampled_values + torch.randn_like(sampled_values) * noise_std
 
-        # add outliers
-        outlier_mask = torch.rand_like(sampled_values) < outlier_prob
-        sampled_values[outlier_mask] += torch.randn_like(sampled_values[outlier_mask]) * noise_std * 20
+            # add outliers
+            outlier_mask = torch.rand_like(sampled_values) < outlier_prob
+            sampled_values[outlier_mask] += torch.randn_like(sampled_values[outlier_mask]) * noise_std * 20
 
-        # spatial shift
-        row_shift = torch.randint(-shift_max, shift_max + 1, (num_samples,), device=device)
-        col_shift = torch.randint(-shift_max, shift_max + 1, (num_samples,), device=device)
+            # spatial shift
+            row_shift = torch.randint(-shift_max, shift_max + 1, (num_samples,), device=device)
+            col_shift = torch.randint(-shift_max, shift_max + 1, (num_samples,), device=device)
 
-        rows = torch.clamp(rows + row_shift, 0, H - 1)
-        cols = torch.clamp(cols + col_shift, 0, W - 1)
+            rows = torch.clamp(rows + row_shift, 0, H - 1)
+            cols = torch.clamp(cols + col_shift, 0, W - 1)
 
-        # scatter into prior
-        prior[rows, cols] = sampled_values
+            # scatter into prior
+            prior[rows, cols] = sampled_values
+        else:
+            # ---- rectangle-based prior ----
+            # number of rectangles (bias towards 1)
+            probs = torch.tensor([0.6, 0.3, 0.1], device=device)
+            prior_number = torch.multinomial(probs, 1).item() + 1  # 1..3
+
+            # rectangle size distribution (biased around mean)
+            min_size = int(0.05 * min(H, W))
+            max_size = int(0.09 * min(H, W))
+            mean_size = int(0.07 * min(H, W))
+            std_size = int(0.01 * min(H, W))
+
+            for _ in range(prior_number):
+                # sample rectangle size (clipped normal)
+                h = int(torch.normal(mean_size, std_size, size=(1,), device=device).clamp(min_size, max_size))
+                w = int(torch.normal(mean_size, std_size, size=(1,), device=device).clamp(min_size, max_size))
+
+                # sample center (safe bounds incl. misalignment)
+                cx = torch.randint(h // 2 + shift_max, H - h // 2 - shift_max, (1,), device=device).item()
+                cy = torch.randint(w // 2 + shift_max, W - w // 2 - shift_max, (1,), device=device).item()
+
+                x0, x1 = cx - h // 2, cx + h // 2
+                y0, y1 = cy - w // 2, cy + w // 2
+
+                depth_patch = depth[x0:x1, y0:y1]
+                label_patch = label[x0:x1, y0:y1]
+
+                # ignore invalid depth
+                valid = depth_patch > 0
+                if valid.sum() == 0:
+                    continue
+
+                # dominant semantic label
+                labels, counts = torch.unique(label_patch[valid], return_counts=True)
+                dominant_label = labels[counts.argmax()]
+
+                label_mask = label_patch == dominant_label
+                final_mask = valid & label_mask
+
+                if final_mask.sum() == 0:
+                    continue
+
+                # random misalignment
+                dx = torch.randint(-shift_max, shift_max + 1, (1,), device=device).item()
+                dy = torch.randint(-shift_max, shift_max + 1, (1,), device=device).item()
+
+                tx0 = max(0, min(H, x0 + dx))
+                tx1 = max(0, min(H, x1 + dx))
+                ty0 = max(0, min(W, y0 + dy))
+                ty1 = max(0, min(W, y1 + dy))
+
+                sx0 = tx0 - (x0 + dx)
+                sx1 = sx0 + (tx1 - tx0)
+                sy0 = ty0 - (y0 + dy)
+                sy1 = sy0 + (ty1 - ty0)
+
+                prior[tx0:tx1, ty0:ty1][final_mask[sx0:sx1, sy0:sy1]] = depth_patch[sx0:sx1, sy0:sy1][final_mask[sx0:sx1, sy0:sy1]]
+
+
 
         if prior.ndim == 2: # ensure 1, H, W
             prior = prior.unsqueeze(0)
