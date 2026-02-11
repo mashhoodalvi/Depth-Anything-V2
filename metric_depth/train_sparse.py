@@ -12,7 +12,8 @@ import torch.distributed as dist
 from torch.utils.data import DataLoader
 from torch.optim import AdamW
 import torch.nn.functional as F
-from torch.utils.tensorboard import SummaryWriter
+#from torch.utils.tensorboard import SummaryWriter
+import mlflow
 
 from dataset.hypersim_sparse import Hypersim
 from dataset.kitti import KITTI
@@ -41,6 +42,8 @@ parser.add_argument('--save-path', default="./outputs", type=str)#, required=Tru
 parser.add_argument('--local-rank', default=0, type=int)
 parser.add_argument('--port', default=None, type=int)
 parser.add_argument('--relative-path', default="../Hypersim/", type=str, help="Input relative path to training data")
+parser.add_argument('--save-model', default=0, type=int, help="Save model if 1")
+
 
 def set_seed(seed=42):
     random.seed(seed)
@@ -73,7 +76,7 @@ def main():
     if rank == 0:
         all_args = {**vars(args), 'ngpus': world_size}
         logger.info('{}\n'.format(pprint.pformat(all_args)))
-        writer = SummaryWriter(args.save_path)
+        #writer = SummaryWriter(args.save_path)
     
     cudnn.enabled = True
     cudnn.benchmark = True
@@ -127,7 +130,7 @@ def main():
     model = SparsePriorDA(**{**model_configs[args.encoder], 'max_depth': args.max_depth})
     
     if args.pretrained_from:
-        model.load_state_dict({k: v for k, v in torch.load(args.pretrained_from, map_location='cpu').items() if 'pretrained' in k}, strict=False)
+        model.load_state_dict({k: v for k, v in torch.load(os.path.join(args.pretrained_from, "depth_anything_v2_metric_hypersim_vitb.pth"), map_location='cpu').items() if 'pretrained' in k}, strict=False)
     
     for param in model.pretrained.parameters():  #freeze dinov2
         param.requires_grad = False
@@ -192,7 +195,8 @@ def main():
             optimizer.param_groups[1]["lr"] = lr * 10.0
             
             if rank == 0:
-                writer.add_scalar('train/loss', loss.item(), iters)
+                #writer.add_scalar('train/loss', loss.item(), iters)
+                mlflow.log_metric('train/loss', loss.item(), iters)
             
             if rank == 0 and i % 100 == 0:
                 logger.info('Iter: {}/{}, LR: {:.7f}, Loss: {:.3f}'.format(i, len(trainloader), optimizer.param_groups[0]['lr'], loss.item()))
@@ -237,7 +241,8 @@ def main():
             print()
             
             for name, metric in results.items():
-                writer.add_scalar(f'eval/{name}', (metric / nsamples).item(), epoch)
+                #writer.add_scalar(f'eval/{name}', (metric / nsamples).item(), epoch)
+                mlflow.log_metric(f'eval/{name}', (metric / nsamples).item(), epoch)
         
         for k in results.keys():
             if k in ['d1', 'd2', 'd3']:
@@ -252,7 +257,8 @@ def main():
                 'epoch': epoch,
                 'previous_best': previous_best,
             }
-            torch.save(checkpoint, os.path.join(args.save_path, 'latest.pth'))
+            if args.save_model == 1:
+                torch.save(checkpoint, os.path.join(args.save_path, 'latest.pth'))
 
 
 if __name__ == '__main__':
