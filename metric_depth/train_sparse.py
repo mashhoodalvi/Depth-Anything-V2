@@ -131,6 +131,10 @@ def main():
     
     for param in model.pretrained.parameters():  #freeze dinov2
         param.requires_grad = False
+    
+    for param in model.depth_head.parameters():  #freeze dpt
+        param.requires_grad = False
+        
     #model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
     #model.cuda(local_rank)
     #model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[local_rank], broadcast_buffers=False,
@@ -174,6 +178,10 @@ def main():
                 depth = depth.flip(-1)
                 valid_mask = valid_mask.flip(-1)
                 prior = prior.flip(-1)
+
+            scale = torch.empty(1).uniform_(0.5, 2.0)
+            depth *= scale
+            prior *= scale
             
             pred = model(img, prior)
             
