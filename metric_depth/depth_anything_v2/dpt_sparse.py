@@ -10,7 +10,7 @@ from .util.transform import Resize, NormalizeImage, PrepareForNet
 from .dinov2_layers import Mlp, PatchEmbed, SwiGLUFFNFused, MemEffAttention, NestedTensorBlock as Block
 from .dinov2_layers import Attention, Mlp
 from typing import Callable, Optional, Tuple, Union
-
+#import numpy as np
 
 def _make_fusion_block(features, use_bn, size=None):
     return FeatureFusionBlock(
@@ -187,10 +187,24 @@ class SparsePriorDA(nn.Module):
         features = list(self.pretrained.get_intermediate_layers(x, self.intermediate_layer_idx[self.encoder], return_class_token=True)) #make it mutable
         depth_prior = self.depth_embedder(depth_prior, self.pretrained.pos_embed)
         depth_prior = self.depth_self_att(depth_prior)
-        depth_prior = depth_prior[:, 1:] # remove cls token
-        tokens, cls = features[-1] #only use last layer as it is first layer in fusion and has highest abstraction
-        tokens = self.depth_cross_att(tokens, depth_prior) #cls token is not used in DPT
-        features[-1] = (tokens, cls)
+        # print(f"shape of depth with cls: {depth_prior.size()}")
+        # print(f"shape of cls features: {features[-1][1].size()}")
+        # depth_prior = depth_prior[:, 1:] # remove cls token
+        # tokens, cls = features[-1] #only use last layer as it is first layer in fusion and has highest abstraction
+
+        # print(f"shape of layer4: {tokens.size()}")
+        # print(f"shape of depth: {depth_prior.size()}")
+
+        # tokens = self.depth_cross_att(tokens, depth_prior) #cls token is not used in DPT
+        # features[-1] = (tokens, cls)
+        for i in range(len(features)):
+            #print(features[i])
+            tokens, cls = features[i]
+            tokens = self.depth_cross_att(tokens, depth_prior) 
+            features[i] = (tokens, cls)
+            #print(features[i])
+
+
         features = tuple(features)
 
         
@@ -200,11 +214,13 @@ class SparsePriorDA(nn.Module):
     
     @torch.no_grad()
     def infer_image(self, raw_image, raw_depth_prior, input_size=518):
+        #print(f"raw image min {np.min(raw_image)}, raw image max:{np.max(raw_image)}")
         image, (h, w) = self.image2tensor(raw_image, input_size)
         depth_prior, (h_d, w_d) = self.depth2tensor(raw_depth_prior, input_size)
         assert(h == h_d and w == w_d), f"Image and Depth Prior must have same size"
-        print(depth_prior.shape)
-        
+        #print(f"Input prior shape {depth_prior.shape}")
+        #print(f"input image shape{image.shape}")
+        #print(f"max image: {torch.max(image)} min image: {torch.min(image)}")
         depth = self.forward(image, depth_prior)
         
         depth = F.interpolate(depth[:, None], (h, w), mode="bilinear", align_corners=True)[0, 0]
@@ -222,13 +238,14 @@ class SparsePriorDA(nn.Module):
                 resize_method='lower_bound',
                 image_interpolation_method=cv2.INTER_CUBIC,
             ),
-            NormalizeImage(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+            NormalizeImage(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]), # mean of image net
             PrepareForNet(),
         ])
         
         h, w = raw_image.shape[:2]
+        #print(f"raw image shape{raw_image.shape}")
         
-        image = cv2.cvtColor(raw_image, cv2.COLOR_BGR2RGB) / 255.0
+        image = cv2.cvtColor(raw_image, cv2.COLOR_BGR2RGB) / 255.0 
         
         image = transform({'image': image})['image']
         image = torch.from_numpy(image).unsqueeze(0)
@@ -361,8 +378,8 @@ class DepthSelfBlock(nn.Module):
             nn.Linear(int(bottleneck * mlp_ratio), bottleneck),
         )
         self.proj_out = nn.Linear(bottleneck, dim)
-        nn.init.zeros_(self.proj_out.weight)  #notwendig?
-        nn.init.zeros_(self.proj_out.bias)
+        #nn.init.zeros_(self.proj_out.weight)  #notwendig?
+        #nn.init.zeros_(self.proj_out.bias)
 
 
     def forward(self, x):
@@ -385,8 +402,8 @@ class DepthCrossBlock(nn.Module):
         self.attn = nn.MultiheadAttention(bottleneck, num_heads, batch_first=True)
         self.proj = nn.Linear(bottleneck, dim)
 
-        nn.init.zeros_(self.proj.weight) 
-        nn.init.zeros_(self.proj.bias) # when attention zero and bias zero all is zero
+        #nn.init.zeros_(self.proj.weight) 
+        #nn.init.zeros_(self.proj.bias) # when attention zero and bias zero all is zero
 
     def forward(self, rgb, depth):
         out = self.attn(
@@ -394,7 +411,7 @@ class DepthCrossBlock(nn.Module):
             self.norm_kv(self.kv_proj(depth)),
             self.norm_kv(self.kv_proj(depth)),
         )[0]
-        return rgb + self.proj(out)
+        return rgb + self.proj(out) * 10
 
 
 
