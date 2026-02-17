@@ -185,8 +185,8 @@ class SparsePriorDA(nn.Module):
         patch_h, patch_w = x.shape[-2] // 14, x.shape[-1] // 14
         
         features = list(self.pretrained.get_intermediate_layers(x, self.intermediate_layer_idx[self.encoder], return_class_token=True)) #make it mutable
-        depth_prior = self.depth_embedder(depth_prior, self.pretrained.pos_embed)
-        depth_prior = self.depth_self_att(depth_prior)
+        depth_prior_embeddings = self.depth_embedder(depth_prior)
+        depth_prior_embeddings = self.depth_self_att(depth_prior_embeddings)
         # print(f"shape of depth with cls: {depth_prior.size()}")
         # print(f"shape of cls features: {features[-1][1].size()}")
         # depth_prior = depth_prior[:, 1:] # remove cls token
@@ -197,13 +197,16 @@ class SparsePriorDA(nn.Module):
 
         # tokens = self.depth_cross_att(tokens, depth_prior) #cls token is not used in DPT
         # features[-1] = (tokens, cls)
-        for i in range(len(features)):
-            #print(features[i])
-            tokens, cls = features[i]
-            tokens = self.depth_cross_att(tokens, depth_prior)
-            #tokens *=
-            features[i] = (tokens, cls)
-            #print(features[i])
+
+        # for i in range(len(features)):
+        #     tokens, cls = features[i]
+        #     tokens = self.depth_cross_att(tokens, depth_prior)
+        #     features[i] = (tokens, cls)
+
+        tokens, cls = features[-1]
+        tokens = tokens + get_2d_sincos_pos_embed(tokens.shape[-1], patch_h, patch_w, tokens.device, tokens.dtype)
+        tokens = self.depth_cross_att(tokens, depth_prior_embeddings)
+        features[-1] = (tokens, cls)
 
 
         features = tuple(features)
@@ -290,75 +293,140 @@ class SparsePriorDA(nn.Module):
 
 
 
+# class DepthEmbedding(nn.Module):
+#     def __init__(self, img_size: Union[int, Tuple[int, int]] = 518, patch_size: Union[int, Tuple[int, int]] = 14, in_chans: int = 1, embed_dim: int = 768):
+#         super().__init__()
+#         self.patch_embed = PatchEmbed(img_size=img_size, patch_size=patch_size, in_chans=in_chans, embed_dim=embed_dim)
+#         self.patch_size = patch_size
+#         self.interpolate_offset = 0.1
+#         self.interpolate_antialias = False
+#         num_patches = self.patch_embed.num_patches
+#         self.num_tokens = 1
+#         self.pos_embeddings_initialized = False
+#         self.pos_embed = nn.Parameter(torch.zeros(1, num_patches + self.num_tokens, embed_dim))
+#         self.cls_token = nn.Parameter(torch.zeros(1, 1, embed_dim))
+
+#     def interpolate_pos_encoding(self, x, w, h):
+#         previous_dtype = x.dtype
+#         npatch = x.shape[1] - 1
+#         N = self.pos_embed.shape[1] - 1
+#         if npatch == N and w == h:
+#             return self.pos_embed
+#         pos_embed = self.pos_embed.float()
+#         class_pos_embed = pos_embed[:, 0]
+#         patch_pos_embed = pos_embed[:, 1:]
+#         dim = x.shape[-1]
+#         w0 = w // self.patch_size
+#         h0 = h // self.patch_size
+#         w0, h0 = w0 + self.interpolate_offset, h0 + self.interpolate_offset
+        
+#         sqrt_N = math.sqrt(N)
+#         sx, sy = float(w0) / sqrt_N, float(h0) / sqrt_N
+#         patch_pos_embed = nn.functional.interpolate(
+#             patch_pos_embed.reshape(1, int(sqrt_N), int(sqrt_N), dim).permute(0, 3, 1, 2),
+#             scale_factor=(sx, sy),
+#             # (int(w0), int(h0)), # to solve the upsampling shape issue
+#             mode="bicubic",
+#             antialias=self.interpolate_antialias
+#         )
+        
+#         assert int(w0) == patch_pos_embed.shape[-2]
+#         assert int(h0) == patch_pos_embed.shape[-1]
+#         patch_pos_embed = patch_pos_embed.permute(0, 2, 3, 1).view(1, -1, dim)
+#         return torch.cat((class_pos_embed.unsqueeze(0), patch_pos_embed), dim=1).to(previous_dtype)
+    
+
+    
+#     def init_weights(self, pos_embed: torch.Tensor):
+#         """
+#         Call after weights of Dino are loaded into model 
+#         If pos_embeds are already initialized the function does nothing. 
+               
+#         """
+#         if torch.all(self.pos_embed == 0):
+#             with torch.no_grad():
+#                 self.pos_embed.copy_(pos_embed)
+
+#         self.pos_embeddings_initialized = True
+
+
+#     def forward(self, x, pos_embed):
+#         if not self.pos_embeddings_initialized:
+#             self.init_weights(pos_embed)
+            
+
+#         B, nc, w, h = x.shape
+#         x = self.patch_embed(x) # don't mask patches because we add positional embeddings so never zero
+
+
+#         x = torch.cat((self.cls_token.expand(x.shape[0], -1, -1), x), dim=1) # we throw this away later but need it to match pos embedding dim
+#         x = x + self.interpolate_pos_encoding(x, w, h)
+#         return x
+
 class DepthEmbedding(nn.Module):
     def __init__(self, img_size: Union[int, Tuple[int, int]] = 518, patch_size: Union[int, Tuple[int, int]] = 14, in_chans: int = 1, embed_dim: int = 768):
         super().__init__()
-        self.patch_embed = PatchEmbed(img_size=img_size, patch_size=patch_size, in_chans=in_chans, embed_dim=embed_dim)
-        self.patch_size = patch_size
-        self.interpolate_offset = 0.1
-        self.interpolate_antialias = False
-        num_patches = self.patch_embed.num_patches
-        self.num_tokens = 1
-        self.pos_embeddings_initialized = False
-        self.pos_embed = nn.Parameter(torch.zeros(1, num_patches + self.num_tokens, embed_dim))
-        self.cls_token = nn.Parameter(torch.zeros(1, 1, embed_dim))
-
-    def interpolate_pos_encoding(self, x, w, h):
-        previous_dtype = x.dtype
-        npatch = x.shape[1] - 1
-        N = self.pos_embed.shape[1] - 1
-        if npatch == N and w == h:
-            return self.pos_embed
-        pos_embed = self.pos_embed.float()
-        class_pos_embed = pos_embed[:, 0]
-        patch_pos_embed = pos_embed[:, 1:]
-        dim = x.shape[-1]
-        w0 = w // self.patch_size
-        h0 = h // self.patch_size
-        w0, h0 = w0 + self.interpolate_offset, h0 + self.interpolate_offset
-        
-        sqrt_N = math.sqrt(N)
-        sx, sy = float(w0) / sqrt_N, float(h0) / sqrt_N
-        patch_pos_embed = nn.functional.interpolate(
-            patch_pos_embed.reshape(1, int(sqrt_N), int(sqrt_N), dim).permute(0, 3, 1, 2),
-            scale_factor=(sx, sy),
-            # (int(w0), int(h0)), # to solve the upsampling shape issue
-            mode="bicubic",
-            antialias=self.interpolate_antialias
+        self.patch_embed = PatchEmbed(
+            img_size=img_size,
+            patch_size=patch_size,
+            in_chans=in_chans,
+            embed_dim=embed_dim,
         )
-        
-        assert int(w0) == patch_pos_embed.shape[-2]
-        assert int(h0) == patch_pos_embed.shape[-1]
-        patch_pos_embed = patch_pos_embed.permute(0, 2, 3, 1).view(1, -1, dim)
-        return torch.cat((class_pos_embed.unsqueeze(0), patch_pos_embed), dim=1).to(previous_dtype)
-    
+        self.patch_size = patch_size
+        self.embed_dim = embed_dim
 
-    
-    def init_weights(self, pos_embed: torch.Tensor):
+    def forward(self, x):
         """
-        Call after weights of Dino are loaded into model 
-        If pos_embeds are already initialized the function does nothing. 
-               
+        x: (B, 1, H, W)
+        returns: (B, N, D)
         """
-        if torch.all(self.pos_embed == 0):
-            with torch.no_grad():
-                self.pos_embed.copy_(pos_embed)
+        B, _, H, W = x.shape
 
-        self.pos_embeddings_initialized = True
+        x = self.patch_embed(x)  # (B, N, D)
 
+        Hp = H // self.patch_size
+        Wp = W // self.patch_size
 
-    def forward(self, x, pos_embed):
-        if not self.pos_embeddings_initialized:
-            self.init_weights(pos_embed)
-            
+        pos = get_2d_sincos_pos_embed(
+            self.embed_dim,
+            Hp,
+            Wp,
+            device=x.device,
+            dtype=x.dtype,
+        )
 
-        B, nc, w, h = x.shape
-        x = self.patch_embed(x) # don't mask patches because we add positional embeddings so never zero
+        return x + pos
+    
+def get_2d_sincos_pos_embed(embed_dim, grid_h, grid_w, device, dtype):
+    """
+    Returns: (1, grid_h * grid_w, embed_dim)
+    """
+    assert embed_dim % 4 == 0
 
+    y = torch.arange(grid_h, device=device)
+    x = torch.arange(grid_w, device=device)
+    yy, xx = torch.meshgrid(y, x, indexing="ij")  # (H, W)
 
-        x = torch.cat((self.cls_token.expand(x.shape[0], -1, -1), x), dim=1) # we throw this away later but need it to match pos embedding dim
-        x = x + self.interpolate_pos_encoding(x, w, h)
-        return x
+    yy = yy.reshape(-1)
+    xx = xx.reshape(-1)
+
+    omega = torch.arange(embed_dim // 4, device=device) / (embed_dim // 4)
+    omega = 1.0 / (10000 ** omega)
+
+    out_y = torch.einsum("n,d->nd", yy, omega)
+    out_x = torch.einsum("n,d->nd", xx, omega)
+
+    pos = torch.cat(
+        [
+            torch.sin(out_y),
+            torch.cos(out_y),
+            torch.sin(out_x),
+            torch.cos(out_x),
+        ],
+        dim=1,
+    )
+
+    return pos.unsqueeze(0).to(dtype)
 
 
 class DepthSelfBlock(nn.Module):
@@ -369,6 +437,9 @@ class DepthSelfBlock(nn.Module):
 
         self.norm1 = nn.LayerNorm(bottleneck)
         self.attn = nn.MultiheadAttention(bottleneck, num_heads, batch_first=True, bias=True)
+
+        self.gamma_attn = nn.Parameter(torch.zeros(1))
+        self.gamma_mlp  = nn.Parameter(torch.zeros(1))
 
 
         self.norm2 = nn.LayerNorm(bottleneck)
@@ -388,8 +459,8 @@ class DepthSelfBlock(nn.Module):
         # z = z + self.attn(self.norm1(z), self.norm1(z), self.norm1(z))[0]
         # z = z + self.mlp(self.norm2(z))
         #return x + self.proj_out(z)
-        x = x + self.attn(self.norm1(x), self.norm1(x), self.norm1(x))[0]
-        x = x + self.mlp(self.norm2(x))
+        x = x + self.gamma_attn * self.attn(self.norm1(x), self.norm1(x), self.norm1(x))[0]
+        x = x + self.gamma_mlp * self.mlp(self.norm2(x))
         return x
     
 
@@ -404,7 +475,7 @@ class DepthCrossBlock(nn.Module):
         self.norm_kv = nn.LayerNorm(bottleneck)
 
         self.attn = nn.MultiheadAttention(bottleneck, num_heads, batch_first=True)
-        self.proj = nn.Linear(bottleneck, 1)
+        self.proj = nn.Linear(bottleneck, dim)
 
         nn.init.zeros_(self.proj.weight) 
         nn.init.zeros_(self.proj.bias) # when attention zero and bias zero all is zero
