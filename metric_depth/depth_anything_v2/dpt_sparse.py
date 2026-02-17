@@ -200,7 +200,8 @@ class SparsePriorDA(nn.Module):
         for i in range(len(features)):
             #print(features[i])
             tokens, cls = features[i]
-            tokens = self.depth_cross_att(tokens, depth_prior) 
+            tokens = self.depth_cross_att(tokens, depth_prior)
+            #tokens *=
             features[i] = (tokens, cls)
             #print(features[i])
 
@@ -361,10 +362,10 @@ class DepthEmbedding(nn.Module):
 
 
 class DepthSelfBlock(nn.Module):
-    def __init__(self, dim = 768, bottleneck = 128, num_heads = 4, mlp_ratio=4.0):
+    def __init__(self, dim = 768, bottleneck = 768, num_heads = 4, mlp_ratio=4.0):
         super().__init__()
 
-        self.proj_in = nn.Linear(dim, bottleneck)
+        #self.proj_in = nn.Linear(dim, bottleneck)
 
         self.norm1 = nn.LayerNorm(bottleneck)
         self.attn = nn.MultiheadAttention(bottleneck, num_heads, batch_first=True, bias=True)
@@ -377,177 +378,45 @@ class DepthSelfBlock(nn.Module):
             nn.Dropout(0.1),
             nn.Linear(int(bottleneck * mlp_ratio), bottleneck),
         )
-        self.proj_out = nn.Linear(bottleneck, dim)
+        #self.proj_out = nn.Linear(bottleneck, dim)
         #nn.init.zeros_(self.proj_out.weight)  #notwendig?
         #nn.init.zeros_(self.proj_out.bias)
 
 
     def forward(self, x):
-        z = self.proj_in(x)
-        z = z + self.attn(self.norm1(z), self.norm1(z), self.norm1(z))[0]
-        z = z + self.mlp(self.norm2(z))
-        return x + self.proj_out(z)
+        # #z = self.proj_in(x)
+        # z = z + self.attn(self.norm1(z), self.norm1(z), self.norm1(z))[0]
+        # z = z + self.mlp(self.norm2(z))
+        #return x + self.proj_out(z)
+        x = x + self.attn(self.norm1(x), self.norm1(x), self.norm1(x))[0]
+        x = x + self.mlp(self.norm2(x))
+        return x
     
 
 class DepthCrossBlock(nn.Module):
-    def __init__(self, dim = 768, bottleneck = 128, num_heads = 4):
+    def __init__(self, dim = 768, bottleneck = 768, num_heads = 4):
         super().__init__()
 
-        self.q_proj = nn.Linear(dim, bottleneck)
+        #self.q_proj = nn.Linear(dim, bottleneck)
         self.kv_proj = nn.Linear(dim, bottleneck)
 
         self.norm_q = nn.LayerNorm(bottleneck)
         self.norm_kv = nn.LayerNorm(bottleneck)
 
         self.attn = nn.MultiheadAttention(bottleneck, num_heads, batch_first=True)
-        self.proj = nn.Linear(bottleneck, dim)
+        self.proj = nn.Linear(bottleneck, 1)
 
-        #nn.init.zeros_(self.proj.weight) 
-        #nn.init.zeros_(self.proj.bias) # when attention zero and bias zero all is zero
+        nn.init.zeros_(self.proj.weight) 
+        nn.init.zeros_(self.proj.bias) # when attention zero and bias zero all is zero
 
     def forward(self, rgb, depth):
-        out = self.attn(
-            self.norm_q(self.q_proj(rgb)),
-            self.norm_kv(self.kv_proj(depth)),
-            self.norm_kv(self.kv_proj(depth)),
-        )[0]
-        return rgb + self.proj(out) * 10
+        # out = self.attn(
+        #     self.norm_q(self.q_proj(rgb)),
+        #     self.norm_kv(self.kv_proj(depth)),
+        #     self.norm_kv(self.kv_proj(depth)),
+        # )[0]
+        # return self.proj(out) 
+        out = self.attn(self.norm_q(rgb),self.norm_kv(depth),self.norm_kv(depth))[0]
+        return rgb + self.proj(out) #extreme heavy compression
 
 
-
-
-# class DepthPatchEmbed(nn.Module):
-#     def __init__(self, patch_size=14, embed_dim=1024):
-#         super().__init__()
-#         self.patch_size = patch_size
-#         self.proj = nn.Linear(1, embed_dim)
-
-#     def forward(self, depth):
-#         """
-#         depth: [B, 1, H, W]
-#         returns:
-#           depth_tokens: [B, N, C]
-#           depth_mask:   [B, N]  (1 = valid, 0 = missing)
-#         """
-#         B, _, H, W = depth.shape
-#         ps = self.patch_size
-
-#         # patchify
-#         depth = depth.unfold(2, ps, ps).unfold(3, ps, ps)
-#         # [B, 1, H_p, W_p, ps, ps]
-
-#         # validity mask: at least one valid pixel in patch
-#         valid = (depth > 0).float()
-#         depth_mask = (valid.sum(dim=(-1, -2)) > 0).float()
-#         # [B, 1, H_p, W_p]
-
-#         # aggregate depth per patch (mean of valid pixels)
-#         depth_sum = (depth * valid).sum(dim=(-1, -2))
-#         depth_cnt = valid.sum(dim=(-1, -2)).clamp(min=1)
-#         depth_patch = depth_sum / depth_cnt
-#         # [B, 1, H_p, W_p]
-
-#         depth_tokens = depth_patch.flatten(2).transpose(1, 2)
-#         depth_mask = depth_mask.flatten(2).squeeze(1)
-
-#         depth_tokens = self.proj(depth_tokens)  # [B, N, C]
-
-#         return depth_tokens, depth_mask
-    
-#     class DepthSelfAttention(nn.Module):
-#         def __init__(self, dim, num_heads=8):
-#             super().__init__()
-#             self.attn = nn.MultiheadAttention(
-#                 dim, num_heads, batch_first=True
-#             )
-#             self.norm = nn.LayerNorm(dim)
-
-#             # zero-init output projection
-#             nn.init.zeros_(self.attn.out_proj.weight)
-#             nn.init.zeros_(self.attn.out_proj.bias)
-
-#         def forward(self, x, mask):
-#             """
-#             x:    [B, N, C]
-#             mask: [B, N] (1 = valid)
-#             """
-#             key_padding_mask = (mask == 0)
-#             out, _ = self.attn(
-#                 x, x, x,
-#                 key_padding_mask=key_padding_mask,
-#                 need_weights=False
-#             )
-#             return self.norm(x + out)
-        
-#     class DepthCrossAttention(nn.Module):
-#         def __init__(self, dim, num_heads=8):
-#             super().__init__()
-#             self.attn = nn.MultiheadAttention(
-#                 dim, num_heads, batch_first=True
-#             )
-#             self.norm = nn.LayerNorm(dim)
-
-#             # zero-init so initial behavior == original model
-#             nn.init.zeros_(self.attn.out_proj.weight)
-#             nn.init.zeros_(self.attn.out_proj.bias)
-
-#         def forward(self, rgb_tokens, depth_tokens, depth_mask):
-#             """
-#             rgb_tokens:   [B, N, C]
-#             depth_tokens: [B, N, C]
-#             depth_mask:   [B, N]
-#             """
-#             key_padding_mask = (depth_mask == 0)
-
-#             out, _ = self.attn(
-#                 query=rgb_tokens,
-#                 key=depth_tokens,
-#                 value=depth_tokens,
-#                 key_padding_mask=key_padding_mask,
-#                 need_weights=False
-#             )
-
-#             return self.norm(rgb_tokens + out)
-    
-#     class DepthConditioner(nn.Module):
-#         def __init__(self, embed_dim, patch_size=14, num_heads=8):
-#             super().__init__()
-#             self.depth_embed = DepthPatchEmbed(patch_size, embed_dim)
-#             self.depth_self_attn = DepthSelfAttention(embed_dim, num_heads)
-#             self.cross_attn = DepthCrossAttention(embed_dim, num_heads)
-
-#         def forward(self, features, depth):
-#             """
-#             features: list of tuples from DINOv2
-#                     [(patch_tokens, cls_token), ...]
-#             depth:    [B, 1, H, W]
-
-#             returns updated features list
-#             """
-#             depth_tokens, depth_mask = self.depth_embed(depth)
-
-#             # depth self-attention (global propagation)
-#             depth_tokens = self.depth_self_attn(depth_tokens, depth_mask)
-
-#             # apply ONLY to deepest layer
-#             patch_tokens, cls = features[-1]
-
-#             patch_tokens = self.cross_attn(
-#                 patch_tokens,
-#                 depth_tokens,
-#                 depth_mask
-#             )
-
-#             features = list(features)
-#             features[-1] = (patch_tokens, cls)
-
-#             return features
-        
-# features = self.pretrained.get_intermediate_layers(
-#     x, self.intermediate_layer_idx[self.encoder],
-#     return_class_token=False
-#     )
-
-# features = self.depth_conditioner(features, depth_prior)
-
-# depth = self.depth_head(features, patch_h, patch_w)
