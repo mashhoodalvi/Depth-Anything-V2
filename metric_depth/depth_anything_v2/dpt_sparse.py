@@ -204,8 +204,8 @@ class SparsePriorDA(nn.Module):
         #     features[i] = (tokens, cls)
 
         tokens, cls = features[-1]
-        tokens = tokens + get_2d_sincos_pos_embed(tokens.shape[-1], patch_h, patch_w, tokens.device, tokens.dtype)
-        tokens = self.depth_cross_att(tokens, depth_prior_embeddings)
+        #tokens = tokens + get_2d_sincos_pos_embed(tokens.shape[-1], patch_h, patch_w, tokens.device, tokens.dtype)
+        tokens = self.depth_cross_att(tokens, depth_prior_embeddings, patch_h, patch_w)
         features[-1] = (tokens, cls)
 
 
@@ -480,14 +480,15 @@ class DepthCrossBlock(nn.Module):
         nn.init.zeros_(self.proj.weight) 
         nn.init.zeros_(self.proj.bias) # when attention zero and bias zero all is zero
 
-    def forward(self, rgb, depth):
+    def forward(self, rgb, depth, patch_h, patch_w):
         # out = self.attn(
         #     self.norm_q(self.q_proj(rgb)),
         #     self.norm_kv(self.kv_proj(depth)),
         #     self.norm_kv(self.kv_proj(depth)),
         # )[0]
         # return self.proj(out) 
-        out = self.attn(self.norm_q(rgb),self.norm_kv(depth),self.norm_kv(depth))[0]
+        rgb_pos = get_2d_sincos_pos_embed(rgb.shape[-1], patch_h, patch_w, rgb.device, rgb.dtype)
+        out = self.attn(self.norm_q(rgb_pos),self.norm_kv(depth),self.norm_kv(depth))[0]
         return rgb + self.proj(out) #extreme heavy compression
 
 
