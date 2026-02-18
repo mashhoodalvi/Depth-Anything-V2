@@ -146,3 +146,90 @@ class FeatureFusionBlock(nn.Module):
         output = self.out_conv(output)
 
         return output
+
+
+def zero_module(module):
+    """
+    Zero out the parameters of a module and return it.
+    """
+    for p in module.parameters():
+        p.detach().zero_()
+    return module
+
+
+class FeatureFusionDepthBlock(nn.Module):
+    """Feature fusion block.
+    """
+
+    def __init__(self, features, activation, deconv=False, bn=False, expand=False, align_corners=True, size=None):
+        """Init.
+
+        Args:
+            features (int): number of features
+        """
+        super(FeatureFusionDepthBlock, self).__init__()
+
+        self.deconv = deconv
+        self.align_corners = align_corners
+
+        self.groups = 1
+
+        self.expand = expand
+        out_features = features
+        if self.expand == True:
+            out_features = features//2
+
+        self.out_conv = nn.Conv2d(
+            features, out_features, kernel_size=1, stride=1, padding=0, bias=True, groups=1)
+
+        self.resConfUnit1 = ResidualConvUnit(features, activation, bn)
+        self.resConfUnit2 = ResidualConvUnit(features, activation, bn)
+        self.resConfUnit_depth = nn.Sequential(
+            nn.Conv2d(1, features, kernel_size=3, stride=1,
+                      padding=1, bias=True, groups=1),
+            activation,
+            nn.Conv2d(features, features, kernel_size=3,
+                      stride=1, padding=1, bias=True, groups=1),
+            activation,
+            zero_module(
+                nn.Conv2d(features, features, kernel_size=3,
+                          stride=1, padding=1, bias=True, groups=1)
+            )
+        )
+        self.skip_add = nn.quantized.FloatFunctional()
+        self.size = size
+
+    def forward(self, *xs, prompt_depth=None, size=None):
+        """Forward pass.
+
+        Returns:
+            tensor: output
+        """
+        output = xs[0]
+
+        if len(xs) == 2:
+            res = self.resConfUnit1(xs[1])
+            output = self.skip_add.add(output, res)
+
+        output = self.resConfUnit2(output)
+
+        if prompt_depth is not None:
+            prompt_depth = nn.functional.interpolate(
+                prompt_depth, output.shape[2:], mode='bilinear', align_corners=False)
+            res = self.resConfUnit_depth(prompt_depth)
+            output = self.skip_add.add(output, res)
+
+        if (size is None) and (self.size is None):
+            modifier = {"scale_factor": 2}
+        elif size is None:
+            modifier = {"size": self.size}
+        else:
+            modifier = {"size": size}
+
+        output = nn.functional.interpolate(
+            output, **modifier, mode="bilinear", align_corners=self.align_corners
+        )
+
+        output = self.out_conv(output)
+
+        return output

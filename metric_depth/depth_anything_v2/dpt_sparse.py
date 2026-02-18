@@ -277,7 +277,7 @@ class SparsePriorDA(nn.Module):
         
         
         depth_prior = transform({'depth_prior': raw_depth_prior})['depth_prior']
-        depth_prior = torch.from_numpy(depth_prior).unsqueeze(0) / self.max_depth # dpt outputs depth between 0 and 1
+        depth_prior = torch.from_numpy(depth_prior).unsqueeze(0) # / self.max_depth # dpt outputs depth between 0 and 1
 
         if depth_prior.ndim == 3: # ensure B, 1, H, W
             depth_prior = depth_prior.unsqueeze(1)
@@ -459,7 +459,7 @@ class DepthSelfBlock(nn.Module):
         # z = z + self.attn(self.norm1(z), self.norm1(z), self.norm1(z))[0]
         # z = z + self.mlp(self.norm2(z))
         #return x + self.proj_out(z)
-        x = x + self.gamma_attn * self.attn(self.norm1(x), self.norm1(x), self.norm1(x))[0]
+        x = x + self.gamma_attn * self.attn(self.norm1(x), self.norm1(x), self.norm1(x), need_weights = False)[0]
         x = x + self.gamma_mlp * self.mlp(self.norm2(x))
         return x
     
@@ -487,8 +487,8 @@ class DepthCrossBlock(nn.Module):
         #     self.norm_kv(self.kv_proj(depth)),
         # )[0]
         # return self.proj(out) 
-        rgb_pos = get_2d_sincos_pos_embed(rgb.shape[-1], patch_h, patch_w, rgb.device, rgb.dtype)
-        out = self.attn(self.norm_q(rgb_pos),self.norm_kv(depth),self.norm_kv(depth))[0]
+        rgb_pos = rgb + get_2d_sincos_pos_embed(rgb.shape[-1], patch_h, patch_w, rgb.device, rgb.dtype)
+        out = self.attn(self.norm_q(rgb_pos),self.norm_kv(depth),self.norm_kv(depth), need_weights = False)[0]
         return rgb + self.proj(out) #extreme heavy compression
 
 
