@@ -465,7 +465,7 @@ class DepthSelfBlock(nn.Module):
     
 
 class DepthCrossBlock(nn.Module):
-    def __init__(self, dim = 768, bottleneck = 128, num_heads = 8):
+    def __init__(self, dim = 768, bottleneck = 128, num_heads = 8, mlp_ratio=4.0):
         super().__init__()
 
         self.q_proj = nn.Linear(dim, bottleneck)
@@ -475,10 +475,17 @@ class DepthCrossBlock(nn.Module):
         self.norm_kv = nn.LayerNorm(bottleneck)
 
         self.attn = nn.MultiheadAttention(bottleneck, num_heads, batch_first=True)
-        self.proj = nn.Linear(bottleneck, dim)
+        #self.proj = nn.Linear(bottleneck, dim)
 
-        nn.init.zeros_(self.proj.weight) 
-        nn.init.zeros_(self.proj.bias) # when attention zero and bias zero all is zero
+        self.mlp = nn.Sequential(
+            nn.Linear(bottleneck, int(bottleneck * mlp_ratio)),
+            nn.GELU(),
+            nn.Dropout(0.0),
+            nn.Linear(int(bottleneck * mlp_ratio), dim),
+        )
+
+        nn.init.zeros_(self.mlp[3].weight) 
+        nn.init.zeros_(self.mlp[3].bias) # when attention zero and bias zero all is zero
 
     def forward(self, rgb, depth, patch_h, patch_w):
         # out = self.attn(
@@ -490,6 +497,6 @@ class DepthCrossBlock(nn.Module):
         rgb_pos = self.q_proj(rgb) + get_2d_sincos_pos_embed(depth.shape[-1], patch_h, patch_w, rgb.device, rgb.dtype)
         #rgb_pos = rgb + get_2d_sincos_pos_embed(rgb.shape[-1], patch_h, patch_w, rgb.device, rgb.dtype)
         out = self.attn(self.norm_q(rgb_pos),self.norm_kv(depth),self.norm_kv(depth), need_weights = False)[0]
-        return rgb + self.proj(out) #extreme heavy compression
+        return rgb + self.mlp(out) #extreme heavy compression
 
 
