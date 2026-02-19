@@ -364,7 +364,7 @@ class SparsePriorDA(nn.Module):
 #         return x
 
 class DepthEmbedding(nn.Module):
-    def __init__(self, img_size: Union[int, Tuple[int, int]] = 518, patch_size: Union[int, Tuple[int, int]] = 14, in_chans: int = 1, embed_dim: int = 768):
+    def __init__(self, img_size: Union[int, Tuple[int, int]] = 518, patch_size: Union[int, Tuple[int, int]] = 14, in_chans: int = 1, embed_dim: int = 128):
         super().__init__()
         self.patch_embed = PatchEmbed(
             img_size=img_size,
@@ -430,7 +430,7 @@ def get_2d_sincos_pos_embed(embed_dim, grid_h, grid_w, device, dtype):
 
 
 class DepthSelfBlock(nn.Module):
-    def __init__(self, dim = 768, bottleneck = 768, num_heads = 4, mlp_ratio=4.0):
+    def __init__(self, dim = 128, bottleneck = 128, num_heads = 4, mlp_ratio=4.0):
         super().__init__()
 
         #self.proj_in = nn.Linear(dim, bottleneck)
@@ -446,8 +446,8 @@ class DepthSelfBlock(nn.Module):
         self.mlp = nn.Sequential(
             nn.Linear(bottleneck, int(bottleneck * mlp_ratio)),
             nn.GELU(),
-            nn.Dropout(0.1),
-            nn.Linear(int(bottleneck * mlp_ratio), bottleneck),
+            nn.Dropout(0.0),
+            nn.Linear(int(bottleneck * mlp_ratio), dim),
         )
         #self.proj_out = nn.Linear(bottleneck, dim)
         #nn.init.zeros_(self.proj_out.weight)  #notwendig?
@@ -455,21 +455,21 @@ class DepthSelfBlock(nn.Module):
 
 
     def forward(self, x):
-        # #z = self.proj_in(x)
-        # z = z + self.attn(self.norm1(z), self.norm1(z), self.norm1(z))[0]
-        # z = z + self.mlp(self.norm2(z))
-        #return x + self.proj_out(z)
+        # z = self.proj_in(x)
+        # z = z + self.gamma_attn * self.attn(self.norm1(z), self.norm1(z), self.norm1(z), need_weights = False)[0]
+        # x = x + self.gamma_mlp * self.mlp(self.norm2(z))
+        # return x
         x = x + self.gamma_attn * self.attn(self.norm1(x), self.norm1(x), self.norm1(x), need_weights = False)[0]
         x = x + self.gamma_mlp * self.mlp(self.norm2(x))
         return x
     
 
 class DepthCrossBlock(nn.Module):
-    def __init__(self, dim = 768, bottleneck = 768, num_heads = 4):
+    def __init__(self, dim = 768, bottleneck = 128, num_heads = 8):
         super().__init__()
 
-        #self.q_proj = nn.Linear(dim, bottleneck)
-        self.kv_proj = nn.Linear(dim, bottleneck)
+        self.q_proj = nn.Linear(dim, bottleneck)
+        #self.kv_proj = nn.Linear(dim, bottleneck)
 
         self.norm_q = nn.LayerNorm(bottleneck)
         self.norm_kv = nn.LayerNorm(bottleneck)
@@ -487,7 +487,8 @@ class DepthCrossBlock(nn.Module):
         #     self.norm_kv(self.kv_proj(depth)),
         # )[0]
         # return self.proj(out) 
-        rgb_pos = rgb + get_2d_sincos_pos_embed(rgb.shape[-1], patch_h, patch_w, rgb.device, rgb.dtype)
+        rgb_pos = self.q_proj(rgb) + get_2d_sincos_pos_embed(depth.shape[-1], patch_h, patch_w, rgb.device, rgb.dtype)
+        #rgb_pos = rgb + get_2d_sincos_pos_embed(rgb.shape[-1], patch_h, patch_w, rgb.device, rgb.dtype)
         out = self.attn(self.norm_q(rgb_pos),self.norm_kv(depth),self.norm_kv(depth), need_weights = False)[0]
         return rgb + self.proj(out) #extreme heavy compression
 
