@@ -178,14 +178,18 @@ class SparsePriorDA(nn.Module):
         self.depth_embedder = DepthEmbedding()
         self.depth_self_att = DepthSelfBlock()
         self.depth_cross_att = DepthCrossBlock()
-        
+        self.prior_encoder = PriorEncoder(in_ch=2, base_ch=64, out_ch=1)
+
         self.depth_head = DPTHead(self.pretrained.embed_dim, features, use_bn, out_channels=out_channels, use_clstoken=use_clstoken)
     
     def forward(self, x, depth_prior):
         patch_h, patch_w = x.shape[-2] // 14, x.shape[-1] // 14
         
         features = list(self.pretrained.get_intermediate_layers(x, self.intermediate_layer_idx[self.encoder], return_class_token=True)) #make it mutable
-        depth_prior_embeddings = self.depth_embedder(depth_prior)
+
+        prior_encoded = self.prior_encoder(depth_prior)
+
+        depth_prior_embeddings = self.depth_embedder(prior_encoded)
         depth_prior_embeddings = self.depth_self_att(depth_prior_embeddings)
         # print(f"shape of depth with cls: {depth_prior.size()}")
         # print(f"shape of cls features: {features[-1][1].size()}")
@@ -284,84 +288,15 @@ class SparsePriorDA(nn.Module):
         if depth_prior.shape[1] != 1:
             depth_prior = depth_prior.mean(dim=1, keepdim= True)
 
+        prior_mask = (depth_prior > 0).float()
+        depth_prior = torch.concat([depth_prior, prior_mask], dim=1)
+
         
         DEVICE = 'cuda' if torch.cuda.is_available() else 'mps' if torch.backends.mps.is_available() else 'cpu'
         depth_prior = depth_prior.to(DEVICE)
         
         return depth_prior, (h, w)
 
-
-
-
-# class DepthEmbedding(nn.Module):
-#     def __init__(self, img_size: Union[int, Tuple[int, int]] = 518, patch_size: Union[int, Tuple[int, int]] = 14, in_chans: int = 1, embed_dim: int = 768):
-#         super().__init__()
-#         self.patch_embed = PatchEmbed(img_size=img_size, patch_size=patch_size, in_chans=in_chans, embed_dim=embed_dim)
-#         self.patch_size = patch_size
-#         self.interpolate_offset = 0.1
-#         self.interpolate_antialias = False
-#         num_patches = self.patch_embed.num_patches
-#         self.num_tokens = 1
-#         self.pos_embeddings_initialized = False
-#         self.pos_embed = nn.Parameter(torch.zeros(1, num_patches + self.num_tokens, embed_dim))
-#         self.cls_token = nn.Parameter(torch.zeros(1, 1, embed_dim))
-
-#     def interpolate_pos_encoding(self, x, w, h):
-#         previous_dtype = x.dtype
-#         npatch = x.shape[1] - 1
-#         N = self.pos_embed.shape[1] - 1
-#         if npatch == N and w == h:
-#             return self.pos_embed
-#         pos_embed = self.pos_embed.float()
-#         class_pos_embed = pos_embed[:, 0]
-#         patch_pos_embed = pos_embed[:, 1:]
-#         dim = x.shape[-1]
-#         w0 = w // self.patch_size
-#         h0 = h // self.patch_size
-#         w0, h0 = w0 + self.interpolate_offset, h0 + self.interpolate_offset
-        
-#         sqrt_N = math.sqrt(N)
-#         sx, sy = float(w0) / sqrt_N, float(h0) / sqrt_N
-#         patch_pos_embed = nn.functional.interpolate(
-#             patch_pos_embed.reshape(1, int(sqrt_N), int(sqrt_N), dim).permute(0, 3, 1, 2),
-#             scale_factor=(sx, sy),
-#             # (int(w0), int(h0)), # to solve the upsampling shape issue
-#             mode="bicubic",
-#             antialias=self.interpolate_antialias
-#         )
-        
-#         assert int(w0) == patch_pos_embed.shape[-2]
-#         assert int(h0) == patch_pos_embed.shape[-1]
-#         patch_pos_embed = patch_pos_embed.permute(0, 2, 3, 1).view(1, -1, dim)
-#         return torch.cat((class_pos_embed.unsqueeze(0), patch_pos_embed), dim=1).to(previous_dtype)
-    
-
-    
-#     def init_weights(self, pos_embed: torch.Tensor):
-#         """
-#         Call after weights of Dino are loaded into model 
-#         If pos_embeds are already initialized the function does nothing. 
-               
-#         """
-#         if torch.all(self.pos_embed == 0):
-#             with torch.no_grad():
-#                 self.pos_embed.copy_(pos_embed)
-
-#         self.pos_embeddings_initialized = True
-
-
-#     def forward(self, x, pos_embed):
-#         if not self.pos_embeddings_initialized:
-#             self.init_weights(pos_embed)
-            
-
-#         B, nc, w, h = x.shape
-#         x = self.patch_embed(x) # don't mask patches because we add positional embeddings so never zero
-
-
-#         x = torch.cat((self.cls_token.expand(x.shape[0], -1, -1), x), dim=1) # we throw this away later but need it to match pos embedding dim
-#         x = x + self.interpolate_pos_encoding(x, w, h)
-#         return x
 
 class DepthEmbedding(nn.Module):
     def __init__(self, img_size: Union[int, Tuple[int, int]] = 518, patch_size: Union[int, Tuple[int, int]] = 14, in_chans: int = 1, embed_dim: int = 128):
@@ -500,3 +435,77 @@ class DepthCrossBlock(nn.Module):
         return rgb + self.mlp(out) #extreme heavy compression
 
 
+class DoubleConv(nn.Module):
+    """(conv => ReLU => conv => ReLU) block."""
+    def __init__(self, in_ch, out_ch):
+        super().__init__()
+        self.block = nn.Sequential(
+            nn.Conv2d(in_ch, out_ch, kernel_size=3, stride=1, padding=1),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(out_ch, out_ch, kernel_size=3, stride=1, padding=1),
+            nn.ReLU(inplace=True),
+        )
+
+    def forward(self, x):
+        return self.block(x)
+
+
+class PriorEncoder(nn.Module):
+    """
+    Small U-Net for sparse prior + mask.
+
+    - Works for any H, W.
+    - Downsamples twice (H,W -> H/2,W/2 -> H/4,W/4),
+      then upsamples back with bilinear interpolation
+      and crops to match skip sizes.
+    """
+    def __init__(self, in_ch=2, base_ch=64, out_ch=1):
+        """
+        in_ch:  number of input channels (e.g. 2: depth + mask)
+        base_ch: base number of feature channels
+        out_ch: number of output channels (e.g. 1: processed depth prior)
+        """
+        super().__init__()
+
+        # Encoder
+        self.enc1 = DoubleConv(in_ch, base_ch)          # -> (B,  base,   H,   W)
+        self.enc2 = DoubleConv(base_ch, base_ch * 2)    # -> (B, 2base, H/2, W/2)
+        self.enc3 = DoubleConv(base_ch * 2, base_ch * 4)  # -> (B, 4base, H/4, W/4)
+
+        # Downsampling (maxpool)
+        self.pool = nn.MaxPool2d(kernel_size=2, stride=2)
+
+        # Decoder
+        self.dec2 = DoubleConv(base_ch * 4 + base_ch * 2, base_ch * 2)  # skip from enc2
+        self.dec1 = DoubleConv(base_ch * 2 + base_ch, base_ch)          # skip from enc1
+
+        # Output
+        self.out_conv = nn.Conv2d(base_ch, out_ch, kernel_size=3, stride=1, padding=1)
+
+    def forward(self, x):
+        """
+        x: (B, in_ch, H, W)
+        returns: (B, out_ch, H, W)
+        """
+
+        # ----- Encoder -----
+        x1 = self.enc1(x)           # (B, base, H, W)
+        x2 = self.pool(x1)          # (B, base, H/2, W/2)
+        x2 = self.enc2(x2)          # (B, 2base, H/2, W/2)
+
+        x3 = self.pool(x2)          # (B, 2base, H/4, W/4)
+        x3 = self.enc3(x3)          # (B, 4base, H/4, W/4)
+
+        # ----- Decoder -----
+        # Up to enc2 level
+        x_up2 = F.interpolate(x3, size=x2.shape[-2:], mode="bilinear", align_corners=False)
+        x_cat2 = torch.cat([x_up2, x2], dim=1)  # (B, 4base + 2base, H/2, W/2) = (B, 6base, ...)
+        x_dec2 = self.dec2(x_cat2)              # (B, 2base, H/2, W/2)
+
+        # Up to enc1 level
+        x_up1 = F.interpolate(x_dec2, size=x1.shape[-2:], mode="bilinear", align_corners=False)
+        x_cat1 = torch.cat([x_up1, x1], dim=1)  # (B, 2base + base, H, W) = (B, 3base, H, W)
+        x_dec1 = self.dec1(x_cat1)              # (B, base, H, W)
+
+        out = self.out_conv(x_dec1)             # (B, out_ch, H, W)
+        return out
