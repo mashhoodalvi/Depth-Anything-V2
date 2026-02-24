@@ -175,10 +175,10 @@ class SparsePriorDA(nn.Module):
         
         self.encoder = encoder
         self.pretrained = DINOv2(model_name=encoder)
-        self.depth_embedder = DepthEmbedding(in_chans = 2)
-        self.depth_self_att = DepthSelfBlock()
-        self.depth_cross_att = DepthCrossBlock()
-        self.prior_encoder = PriorEncoder(in_ch=2, base_ch=32, out_ch=2)
+        self.depth_embedder = DepthEmbedding(in_chans = 32, embed_dim=128)
+        self.depth_self_att = DepthSelfBlock(dim=128, bottleneck=128)
+        self.depth_cross_att = DepthCrossBlock(bottleneck=128)
+        self.prior_encoder = PriorEncoder(in_ch=2, base_ch=32, out_ch=32)
 
         self.depth_head = DPTHead(self.pretrained.embed_dim, features, use_bn, out_channels=out_channels, use_clstoken=use_clstoken)
     
@@ -373,8 +373,8 @@ class DepthSelfBlock(nn.Module):
         self.norm1 = nn.LayerNorm(bottleneck)
         self.attn = nn.MultiheadAttention(bottleneck, num_heads, batch_first=True, bias=True)
 
-        self.gamma_attn = nn.Parameter(torch.zeros(1))
-        self.gamma_mlp  = nn.Parameter(torch.zeros(1))
+        #self.gamma_attn = nn.Parameter(torch.zeros(1))
+        #self.gamma_mlp  = nn.Parameter(torch.zeros(1))
 
 
         self.norm2 = nn.LayerNorm(bottleneck)
@@ -394,45 +394,46 @@ class DepthSelfBlock(nn.Module):
         # z = z + self.gamma_attn * self.attn(self.norm1(z), self.norm1(z), self.norm1(z), need_weights = False)[0]
         # x = x + self.gamma_mlp * self.mlp(self.norm2(z))
         # return x
-        x = x + self.gamma_attn * self.attn(self.norm1(x), self.norm1(x), self.norm1(x), need_weights = False)[0]
-        x = x + self.gamma_mlp * self.mlp(self.norm2(x))
+        x = x + self.attn(self.norm1(x), self.norm1(x), self.norm1(x), need_weights = False)[0]
+        x = x + self.mlp(self.norm2(x))
         return x
     
 
 class DepthCrossBlock(nn.Module):
-    def __init__(self, dim = 768, bottleneck = 128, num_heads = 8, mlp_ratio=4.0):
+    def __init__(self, dim = 768, bottleneck = 128, num_heads = 4, mlp_ratio=4.0):
         super().__init__()
 
         self.q_proj = nn.Linear(dim, bottleneck)
-        #self.kv_proj = nn.Linear(dim, bottleneck)
 
         self.norm_q = nn.LayerNorm(bottleneck)
         self.norm_kv = nn.LayerNorm(bottleneck)
+        self.norm2 = nn.LayerNorm(bottleneck)
+        self.norm3 = nn.LayerNorm(bottleneck)
 
         self.attn = nn.MultiheadAttention(bottleneck, num_heads, batch_first=True)
+        self.attn_2 = nn.MultiheadAttention(bottleneck, num_heads, batch_first=True)
         #self.proj = nn.Linear(bottleneck, dim)
 
         self.mlp = nn.Sequential(
             nn.Linear(bottleneck, int(bottleneck * mlp_ratio)),
             nn.GELU(),
             nn.Dropout(0.1),
-            nn.Linear(int(bottleneck * mlp_ratio), dim),
+            nn.Linear(int(bottleneck * mlp_ratio), bottleneck),
         )
 
-        nn.init.zeros_(self.mlp[3].weight) 
-        nn.init.zeros_(self.mlp[3].bias) # when attention zero and bias zero all is zero
+        self.output_proj = nn.Linear(bottleneck, dim)
+
+        nn.init.zeros_(self.output_proj.weight) 
+        nn.init.zeros_(self.output_proj.bias) # when attention zero and bias zero all is zero
 
     def forward(self, rgb, depth, patch_h, patch_w):
-        # out = self.attn(
-        #     self.norm_q(self.q_proj(rgb)),
-        #     self.norm_kv(self.kv_proj(depth)),
-        #     self.norm_kv(self.kv_proj(depth)),
-        # )[0]
-        # return self.proj(out) 
+
         rgb_pos = self.q_proj(rgb) + get_2d_sincos_pos_embed(depth.shape[-1], patch_h, patch_w, rgb.device, rgb.dtype)
-        #rgb_pos = rgb + get_2d_sincos_pos_embed(rgb.shape[-1], patch_h, patch_w, rgb.device, rgb.dtype)
-        out = self.attn(self.norm_q(rgb_pos),self.norm_kv(depth),self.norm_kv(depth), need_weights = False)[0]
-        return rgb + torch.tanh(self.mlp(out)) 
+        rgb_pos = rgb_pos + self.attn(self.norm_q(rgb_pos),self.norm_kv(depth),self.norm_kv(depth), need_weights = False)[0]
+        rgb_pos = self.mlp(self.norm2(rgb_pos))
+        rgb_pos = rgb_pos + self.attn_2(self.norm3(rgb_pos),self.norm3(rgb_pos),self.norm3(rgb_pos), need_weights = False)[0]
+
+        return rgb + torch.tanh(self.output_proj(rgb_pos)) 
 
 
 class DoubleConv(nn.Module):
@@ -441,8 +442,10 @@ class DoubleConv(nn.Module):
         super().__init__()
         self.block = nn.Sequential(
             nn.Conv2d(in_ch, out_ch, kernel_size=3, stride=1, padding=1),
+            #nn.GroupNorm(num_groups=8, num_channels=out_ch), #we lose the scale of the prior
             nn.ReLU(inplace=True),
             nn.Conv2d(out_ch, out_ch, kernel_size=3, stride=1, padding=1),
+            #nn.GroupNorm(num_groups=8, num_channels=out_ch),
             nn.ReLU(inplace=True),
         )
 
