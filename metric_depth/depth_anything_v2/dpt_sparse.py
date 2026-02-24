@@ -175,10 +175,10 @@ class SparsePriorDA(nn.Module):
         
         self.encoder = encoder
         self.pretrained = DINOv2(model_name=encoder)
-        self.depth_embedder = DepthEmbedding()
+        self.depth_embedder = DepthEmbedding(in_chans = 2)
         self.depth_self_att = DepthSelfBlock()
         self.depth_cross_att = DepthCrossBlock()
-        self.prior_encoder = PriorEncoder(in_ch=2, base_ch=64, out_ch=1)
+        self.prior_encoder = PriorEncoder(in_ch=2, base_ch=32, out_ch=2)
 
         self.depth_head = DPTHead(self.pretrained.embed_dim, features, use_bn, out_channels=out_channels, use_clstoken=use_clstoken)
     
@@ -381,7 +381,7 @@ class DepthSelfBlock(nn.Module):
         self.mlp = nn.Sequential(
             nn.Linear(bottleneck, int(bottleneck * mlp_ratio)),
             nn.GELU(),
-            nn.Dropout(0.0),
+            nn.Dropout(0.1),
             nn.Linear(int(bottleneck * mlp_ratio), dim),
         )
         #self.proj_out = nn.Linear(bottleneck, dim)
@@ -415,7 +415,7 @@ class DepthCrossBlock(nn.Module):
         self.mlp = nn.Sequential(
             nn.Linear(bottleneck, int(bottleneck * mlp_ratio)),
             nn.GELU(),
-            nn.Dropout(0.0),
+            nn.Dropout(0.1),
             nn.Linear(int(bottleneck * mlp_ratio), dim),
         )
 
@@ -432,7 +432,7 @@ class DepthCrossBlock(nn.Module):
         rgb_pos = self.q_proj(rgb) + get_2d_sincos_pos_embed(depth.shape[-1], patch_h, patch_w, rgb.device, rgb.dtype)
         #rgb_pos = rgb + get_2d_sincos_pos_embed(rgb.shape[-1], patch_h, patch_w, rgb.device, rgb.dtype)
         out = self.attn(self.norm_q(rgb_pos),self.norm_kv(depth),self.norm_kv(depth), need_weights = False)[0]
-        return rgb + self.mlp(out) #extreme heavy compression
+        return rgb + torch.tanh(self.mlp(out)) 
 
 
 class DoubleConv(nn.Module):
@@ -459,7 +459,7 @@ class PriorEncoder(nn.Module):
       then upsamples back with bilinear interpolation
       and crops to match skip sizes.
     """
-    def __init__(self, in_ch=2, base_ch=64, out_ch=1):
+    def __init__(self, in_ch=2, base_ch=32, out_ch=2):
         """
         in_ch:  number of input channels (e.g. 2: depth + mask)
         base_ch: base number of feature channels
@@ -470,13 +470,13 @@ class PriorEncoder(nn.Module):
         # Encoder
         self.enc1 = DoubleConv(in_ch, base_ch)          # -> (B,  base,   H,   W)
         self.enc2 = DoubleConv(base_ch, base_ch * 2)    # -> (B, 2base, H/2, W/2)
-        self.enc3 = DoubleConv(base_ch * 2, base_ch * 4)  # -> (B, 4base, H/4, W/4)
+        #self.enc3 = DoubleConv(base_ch * 2, base_ch * 4)  # -> (B, 4base, H/4, W/4)
 
         # Downsampling (maxpool)
         self.pool = nn.MaxPool2d(kernel_size=2, stride=2)
 
         # Decoder
-        self.dec2 = DoubleConv(base_ch * 4 + base_ch * 2, base_ch * 2)  # skip from enc2
+        #self.dec2 = DoubleConv(base_ch * 4 + base_ch * 2, base_ch * 2)  # skip from enc2
         self.dec1 = DoubleConv(base_ch * 2 + base_ch, base_ch)          # skip from enc1
 
         # Output
@@ -493,17 +493,17 @@ class PriorEncoder(nn.Module):
         x2 = self.pool(x1)          # (B, base, H/2, W/2)
         x2 = self.enc2(x2)          # (B, 2base, H/2, W/2)
 
-        x3 = self.pool(x2)          # (B, 2base, H/4, W/4)
-        x3 = self.enc3(x3)          # (B, 4base, H/4, W/4)
+        #x3 = self.pool(x2)          # (B, 2base, H/4, W/4)
+        #x3 = self.enc3(x3)          # (B, 4base, H/4, W/4)
 
         # ----- Decoder -----
         # Up to enc2 level
-        x_up2 = F.interpolate(x3, size=x2.shape[-2:], mode="bilinear", align_corners=False)
-        x_cat2 = torch.cat([x_up2, x2], dim=1)  # (B, 4base + 2base, H/2, W/2) = (B, 6base, ...)
-        x_dec2 = self.dec2(x_cat2)              # (B, 2base, H/2, W/2)
+        #x_up2 = F.interpolate(x3, size=x2.shape[-2:], mode="bilinear", align_corners=False)
+        #x_cat2 = torch.cat([x_up2, x2], dim=1)  # (B, 4base + 2base, H/2, W/2) = (B, 6base, ...)
+        #x_dec2 = self.dec2(x_cat2)              # (B, 2base, H/2, W/2)
 
         # Up to enc1 level
-        x_up1 = F.interpolate(x_dec2, size=x1.shape[-2:], mode="bilinear", align_corners=False)
+        x_up1 = F.interpolate(x2, size=x1.shape[-2:], mode="bilinear", align_corners=False)
         x_cat1 = torch.cat([x_up1, x1], dim=1)  # (B, 2base + base, H, W) = (B, 3base, H, W)
         x_dec1 = self.dec1(x_cat1)              # (B, base, H, W)
 
