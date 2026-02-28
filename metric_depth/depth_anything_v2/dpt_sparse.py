@@ -175,9 +175,9 @@ class SparsePriorDA(nn.Module):
         
         self.encoder = encoder
         self.pretrained = DINOv2(model_name=encoder)
-        self.depth_embedder = DepthEmbedding(in_chans = 32, embed_dim=128)
-        self.depth_self_att = DepthSelfBlock(dim=128, bottleneck=128)
-        self.depth_cross_att = DepthCrossBlock(bottleneck=128)
+        self.depth_embedder = DepthEmbedding(in_chans = 35, embed_dim=768)
+        self.depth_self_att = DepthSelfBlock(dim=768, bottleneck=768)
+        self.depth_cross_att = DepthCrossBlock(bottleneck=768)
         self.prior_encoder = PriorEncoder(in_ch=2, base_ch=32, out_ch=32)
 
         self.depth_head = DPTHead(self.pretrained.embed_dim, features, use_bn, out_channels=out_channels, use_clstoken=use_clstoken)
@@ -187,7 +187,14 @@ class SparsePriorDA(nn.Module):
         
         features = list(self.pretrained.get_intermediate_layers(x, self.intermediate_layer_idx[self.encoder], return_class_token=True)) #make it mutable
 
+        with torch.no_grad():
+            initial_predition = tuple(features)
+            initial_predition = self.depth_head(initial_predition, patch_h, patch_w) 
+
+        #depth_prior = torch.cat([depth_prior, initial_predition], dim=1) 
+
         prior_encoded = self.prior_encoder(depth_prior)
+        prior_encoded = torch.cat([prior_encoded, initial_predition], dim=1) 
 
         depth_prior_embeddings = self.depth_embedder(prior_encoded)
         depth_prior_embeddings = self.depth_self_att(depth_prior_embeddings)
@@ -428,11 +435,14 @@ class DepthCrossBlock(nn.Module):
 
     def forward(self, rgb, depth, patch_h, patch_w):
 
-        rgb_pos = self.q_proj(rgb) + get_2d_sincos_pos_embed(depth.shape[-1], patch_h, patch_w, rgb.device, rgb.dtype)
-        rgb_pos = rgb_pos + self.attn(self.norm_q(rgb_pos),self.norm_kv(depth),self.norm_kv(depth), need_weights = False)[0]
-        rgb_pos = self.mlp(self.norm2(rgb_pos))
+        #rgb_pos = self.q_proj(rgb) + get_2d_sincos_pos_embed(depth.shape[-1], patch_h, patch_w, rgb.device, rgb.dtype)
+        rgb_pos = rgb + get_2d_sincos_pos_embed(depth.shape[-1], patch_h, patch_w, rgb.device, rgb.dtype)
+
+        rgb_pos = rgb_pos + self.attn(self.norm_q(rgb_pos),self.norm_kv(depth), self.norm_kv(depth), need_weights = False)[0]
+        rgb_pos = rgb_pos + self.mlp(self.norm2(rgb_pos))
         rgb_pos = rgb_pos + self.attn_2(self.norm3(rgb_pos),self.norm3(rgb_pos),self.norm3(rgb_pos), need_weights = False)[0]
 
+        #return rgb + self.output_proj(rgb_pos)
         return rgb + torch.tanh(self.output_proj(rgb_pos)) 
 
 
@@ -442,10 +452,10 @@ class DoubleConv(nn.Module):
         super().__init__()
         self.block = nn.Sequential(
             nn.Conv2d(in_ch, out_ch, kernel_size=3, stride=1, padding=1),
-            #nn.GroupNorm(num_groups=8, num_channels=out_ch), #we lose the scale of the prior
+            nn.GroupNorm(num_groups=8, num_channels=out_ch), #we lose the scale of the prior
             nn.ReLU(inplace=True),
             nn.Conv2d(out_ch, out_ch, kernel_size=3, stride=1, padding=1),
-            #nn.GroupNorm(num_groups=8, num_channels=out_ch),
+            nn.GroupNorm(num_groups=8, num_channels=out_ch),
             nn.ReLU(inplace=True),
         )
 
@@ -511,4 +521,4 @@ class PriorEncoder(nn.Module):
         x_dec1 = self.dec1(x_cat1)              # (B, base, H, W)
 
         out = self.out_conv(x_dec1)             # (B, out_ch, H, W)
-        return out
+        return torch.cat([out, x], dim= 1)

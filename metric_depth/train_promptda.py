@@ -19,7 +19,7 @@ from dataset.hypersim_sparse import Hypersim
 from dataset.kitti import KITTI
 from dataset.vkitti2 import VKITTI2
 from depth_anything_v2.dpt import DepthAnythingV2
-from depth_anything_v2.dpt_sparse import SparsePriorDA
+from depth_anything_v2.prompt_da import PromptDA
 
 from util.dist_helper import setup_distributed
 from util.loss import SiLogLoss
@@ -45,9 +45,8 @@ parser.add_argument('--relative-path', default="../Hypersim/", type=str, help="I
 parser.add_argument('--save-model', default=0, type=int, help="Save model if 1")
 parser.add_argument('--normalize-prior', default=0, type=int, help="normalize if 1")
 parser.add_argument('--invert-prior', default=1, type=int, help="invert if 1")
-parser.add_argument('--add-mask', default=1, type=int, help="add mask if 1")
-parser.add_argument("--l1-loss", default=1, type=int, help="add l1 loss if 1")
-parser.add_argument("--gt-prior", default=0, type=int, help="use gt prior if 1")
+
+
 
 
 def set_seed(seed=42):
@@ -92,7 +91,7 @@ def main():
     if args.dataset == 'hypersim':
         trainset = Hypersim(os.path.join(filepath,'dataset/splits_sparse/hypersim/train.txt'), 
                             'train', relative_path, size=size, max_depth=args.max_depth,
-                            min_depth=args.min_depth, invert_prior=args.invert_prior, normalize_prior=args.normalize_prior, add_mask=args.add_mask, gt_prior=args.gt_prior)
+                            min_depth=args.min_depth, invert_prior=args.invert_prior, normalize_prior=args.normalize_prior)
     elif args.dataset == 'vkitti':
         trainset = VKITTI2('dataset/splits/vkitti2/train.txt', 'train', size=size)
     else:
@@ -111,8 +110,8 @@ def main():
     
     if args.dataset == 'hypersim':
         valset = Hypersim(os.path.join(filepath,'dataset/splits_sparse/hypersim/val.txt'),
-                          'val', relative_path, size=size, max_depth=args.max_depth,
-                            min_depth=args.min_depth, invert_prior=args.invert_prior, normalize_prior=args.normalize_prior, add_mask=args.add_mask, gt_prior=args.gt_prior)
+                                  'val', relative_path, size=size, max_depth=args.max_depth,
+                                                              min_depth=args.min_depth, invert_prior=args.invert_prior, normalize_prior=args.normalize_prior)
     elif args.dataset == 'vkitti':
         valset = KITTI('dataset/splits/kitti/val.txt', 'val', size=size)
     else:
@@ -136,7 +135,7 @@ def main():
         'vitl': {'encoder': 'vitl', 'features': 256, 'out_channels': [256, 512, 1024, 1024]},
         'vitg': {'encoder': 'vitg', 'features': 384, 'out_channels': [1536, 1536, 1536, 1536]}
     }
-    model = SparsePriorDA(**{**model_configs[args.encoder], 'max_depth': args.max_depth})
+    model = PromptDA(**{**model_configs[args.encoder], 'max_depth': args.max_depth})
     
     if args.pretrained_from:
         #model.load_state_dict({k: v for k, v in torch.load(os.path.join(args.pretrained_from, "depth_anything_v2_metric_hypersim_vitb.pth"), map_location='cpu').items() if 'pretrained' in k}, strict=False)
@@ -145,8 +144,8 @@ def main():
     for param in model.pretrained.parameters():  #freeze dinov2
         param.requires_grad = False
 
-    for param in model.depth_head.parameters():  #freeze dpt
-        param.requires_grad = False
+    # for param in model.depth_head.parameters():  #freeze dpt
+    #     param.requires_grad = False
 
     # for param in model.parameters():  #freeze all
     #     param.requires_grad = False
@@ -163,8 +162,6 @@ def main():
 
     #criterion = SiLogLoss().cuda(local_rank)
     criterion = SiLogLoss().to(device)
-    criterion2 = torch.nn.L1Loss().to(device)
-
     
     optimizer = AdamW([{'params': [param for name, param in model.named_parameters() if 'depth_head' in name], 'lr': args.lr},
                        {'params': [param for name, param in model.named_parameters() if 'depth_head' not in name], 'lr': args.lr * 10.0}],
@@ -184,8 +181,6 @@ def main():
             
         if hasattr(trainloader.sampler, "set_epoch"):
             trainloader.sampler.set_epoch(epoch + 1)
-
-        trainset.set_epoch(epoch)
         
         
         model.train()
@@ -209,14 +204,7 @@ def main():
             #pred = model(img)
             
             loss = criterion(pred, depth, (valid_mask == 1) & (depth >= args.min_depth) & (depth <= args.max_depth))
-
-            if args.l1_loss == 1:
-                prior_mask = (prior[:, 1] > 0)  # shape: (B, H, W), bool
-                pred_masked = pred[prior_mask]
-                depth_masked = depth[prior_mask]
-
-                loss = loss + criterion2(pred_masked, depth_masked)            
-
+            
             loss.backward()
             optimizer.step()
             
@@ -294,11 +282,7 @@ def main():
                 'previous_best': previous_best,
             }
             if args.save_model == 1:
-                #torch.save(checkpoint, os.path.join(args.save_path, 'latest.pth'))
-                best_path = os.path.join(args.save_path, 'best.pth')
-                # If this is the first epoch or rmse improved, save best
-                if epoch == 0 or (results['rmse'] / nsamples).item() < previous_best['rmse']:
-                    torch.save(checkpoint, best_path)
+                torch.save(checkpoint, os.path.join(args.save_path, 'latest.pth'))
 
 
 if __name__ == '__main__':

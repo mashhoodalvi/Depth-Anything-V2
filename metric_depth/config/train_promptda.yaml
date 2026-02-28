@@ -1,24 +1,23 @@
 $schema: https://azuremlschemas.azureedge.net/latest/commandJob.schema.json
 type: command
 
-display_name: dptfreeze_varprior_randomprior_recursiveunet3selfcross_l1_tanh
+display_name: promptda_dpttrain_zerocnninit_higherlr_randomprior_easy_normalizedprior_randomscale
 experiment_name: train_sparse_da
 
 
 command: >
-  bash -c "python train_sparse.py
+  bash -c "python train_promptda.py
   --pretrained-from=${{inputs.weights}}
   --relative-path=${{inputs.data}}
   --save-path=./outputs
   --bs=8
-  --lr=0.000005 
+  --lr=0.00005 
   --epochs=30
-  --save-model=1
+  --save-model=0
   --invert-prior=0
   --normalize-prior=1
-  --add-mask=1
-  --l1-loss=1
-  --gt-prior=0"
+  --add-mask=0
+  --l1-loss=1"
 #changed default lr = 0.000005 
 code: ..
 
@@ -40,4 +39,4 @@ outputs:
     type: uri_folder
 
 environment: azureml:diffusion-finetune:10
-compute: mashhood-alvi-gpu
+compute: mashhood-alvi-gpu2
